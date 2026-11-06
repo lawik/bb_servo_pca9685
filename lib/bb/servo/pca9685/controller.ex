@@ -83,10 +83,13 @@ defmodule BB.Servo.PCA9685.Controller do
   """
   @impl BB.Controller
   def disarm(opts) do
+    robot = Keyword.fetch!(opts, :robot)
     name = Keyword.fetch!(opts, :name)
 
+    # The controller is registered in the robot's registry, not under a local
+    # name, so it has to be addressed through `BB.Process`.
     try do
-      case GenServer.call(name, :output_disable) do
+      case BB.Process.call(robot, name, :output_disable) do
         :ok -> :ok
         {:error, %NoOutputEnablePin{}} -> :ok
         {:error, reason} -> {:error, reason}
@@ -102,17 +105,19 @@ defmodule BB.Servo.PCA9685.Controller do
 
     case start_device(opts) do
       {:ok, device} ->
+        # `bb` only carries `:robot` and `:path`; the component's own name is
+        # the last path segment.
         state = %{
           bb: bb,
           device: device,
           oe_pin: opts[:oe_pin],
-          name: bb.name
+          name: List.last(bb.path)
         }
 
         BB.Safety.register(__MODULE__,
           robot: state.bb.robot,
           path: state.bb.path,
-          opts: [name: state.name]
+          opts: [robot: state.bb.robot, name: state.name]
         )
 
         {:ok, state}

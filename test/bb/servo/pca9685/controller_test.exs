@@ -13,7 +13,8 @@ defmodule BB.Servo.PCA9685.ControllerTest do
     @moduledoc false
     use GenServer
 
-    def start_link({reply, name}), do: GenServer.start_link(__MODULE__, reply, name: name)
+    def start_link({reply, robot, name}),
+      do: GenServer.start_link(__MODULE__, reply, name: BB.Process.via(robot, name))
 
     @impl GenServer
     def init(reply), do: {:ok, reply}
@@ -23,9 +24,12 @@ defmodule BB.Servo.PCA9685.ControllerTest do
   end
 
   @controller_name :test_pca9685
+  @disarm_robot __MODULE__.DisarmRobot
 
+  # Mirrors what `BB.Process` injects: the robot and the component's path, with
+  # no separate `:name` key.
   defp default_bb_context do
-    %{robot: TestRobot, path: [@controller_name], name: @controller_name}
+    %{robot: TestRobot, path: [@controller_name]}
   end
 
   defp default_opts do
@@ -52,8 +56,26 @@ defmodule BB.Servo.PCA9685.ControllerTest do
       assert {:ok, state} = Controller.init(default_opts())
 
       assert state.bb == default_bb_context()
+      assert state.name == @controller_name
       assert is_pid(state.device)
       assert state.oe_pin == nil
+    end
+
+    test "registers disarm with the robot and the name taken from the path" do
+      stub_pca9685_success()
+      test_pid = self()
+
+      expect(BB.Safety, :register, fn module, opts ->
+        send(test_pid, {:register, module, opts})
+        :ok
+      end)
+
+      Controller.init(default_opts())
+
+      assert_receive {:register, Controller, opts}
+      assert opts[:robot] == TestRobot
+      assert opts[:path] == [@controller_name]
+      assert opts[:opts] == [robot: TestRobot, name: @controller_name]
     end
 
     test "passes correct options to PCA9685.acquire" do
@@ -221,32 +243,43 @@ defmodule BB.Servo.PCA9685.ControllerTest do
   end
 
   describe "disarm/1" do
-    test "returns :ok when the controller disables output" do
-      name = unique_name()
-      start_supervised!(%{id: name, start: {OutputDisableStub, :start_link, [{:ok, name}]}})
+    setup do
+      start_supervised!({Registry, keys: :unique, name: BB.Process.registry_name(@disarm_robot)})
+      :ok
+    end
 
-      assert :ok = Controller.disarm(name: name)
+    test "returns :ok when the controller disables output" do
+      name = start_stub!(:ok)
+
+      assert :ok = Controller.disarm(robot: @disarm_robot, name: name)
     end
 
     test "treats a missing OE pin as :ok" do
       name = unique_name()
-      reply = {:error, %NoOutputEnablePin{controller: name}}
-      start_supervised!(%{id: name, start: {OutputDisableStub, :start_link, [{reply, name}]}})
+      start_stub!({:error, %NoOutputEnablePin{controller: name}}, name)
 
-      assert :ok = Controller.disarm(name: name)
+      assert :ok = Controller.disarm(robot: @disarm_robot, name: name)
     end
 
     test "propagates a hardware error" do
-      name = unique_name()
-      reply = {:error, :i2c_fault}
-      start_supervised!(%{id: name, start: {OutputDisableStub, :start_link, [{reply, name}]}})
+      name = start_stub!({:error, :i2c_fault})
 
-      assert {:error, :i2c_fault} = Controller.disarm(name: name)
+      assert {:error, :i2c_fault} = Controller.disarm(robot: @disarm_robot, name: name)
     end
 
     test "returns an error when the controller process is dead" do
-      assert {:error, {:exit, _reason}} = Controller.disarm(name: unique_name())
+      assert {:error, {:exit, _reason}} =
+               Controller.disarm(robot: @disarm_robot, name: unique_name())
     end
+  end
+
+  defp start_stub!(reply, name \\ unique_name()) do
+    start_supervised!(%{
+      id: name,
+      start: {OutputDisableStub, :start_link, [{reply, @disarm_robot, name}]}
+    })
+
+    name
   end
 
   defp unique_name, do: :"pca9685_disarm_#{System.unique_integer([:positive])}"
