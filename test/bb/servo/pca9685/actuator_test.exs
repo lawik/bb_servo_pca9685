@@ -264,6 +264,76 @@ defmodule BB.Servo.PCA9685.ActuatorTest do
     end
   end
 
+  describe "handle_options/2 with a new pulse range" do
+    setup do
+      stub_controller_success()
+      stub(BB.Safety, :armed?, fn TestRobot -> true end)
+
+      opts = [
+        bb: default_bb_context(),
+        channel: 0,
+        controller: @controller_name,
+        min_pulse: 1200,
+        max_pulse: 1800,
+        motor_profile: motor_profile(motor_lower: -1.0, motor_upper: 1.0)
+      ]
+
+      {:ok, state} = Actuator.init(opts)
+      {:noreply, state} = Actuator.handle_command(position_command(1.0), state)
+
+      {:ok, state: state, opts: opts}
+    end
+
+    defp widen(opts), do: Keyword.merge(opts, min_pulse: 1000, max_pulse: 2000)
+
+    defp capture_pulses do
+      test_pid = self()
+
+      stub(BB.Process, :call, fn TestRobot, @controller_name, {:pulse_width, 0, pulse} ->
+        send(test_pid, {:pulse, pulse})
+        :ok
+      end)
+    end
+
+    test "rewrites the held position at once while armed", %{state: state, opts: opts} do
+      capture_pulses()
+
+      assert {:ok, state} = Actuator.handle_options(widen(opts), state)
+
+      assert_receive {:pulse, 2000}
+      assert state.current_pulse == 2000
+      assert state.pulse_range == 1000
+    end
+
+    test "maps later commands onto the new range", %{state: state, opts: opts} do
+      stub(BB.Safety, :armed?, fn TestRobot -> false end)
+      {:ok, state} = Actuator.handle_options(widen(opts), state)
+      capture_pulses()
+
+      Actuator.handle_command(position_command(-1.0), state)
+
+      assert_receive {:pulse, 1000}
+    end
+
+    test "writes nothing while disarmed", %{state: state, opts: opts} do
+      stub(BB.Safety, :armed?, fn TestRobot -> false end)
+      capture_pulses()
+
+      assert {:ok, _state} = Actuator.handle_options(widen(opts), state)
+
+      refute_receive {:pulse, _}
+    end
+
+    test "doesn't re-energise a stopped servo", %{state: state, opts: opts} do
+      {:noreply, state} = Actuator.handle_command(%Message{payload: %Command.Stop{}}, state)
+      capture_pulses()
+
+      assert {:ok, _state} = Actuator.handle_options(widen(opts), state)
+
+      refute_receive {:pulse, _}
+    end
+  end
+
   describe "position clamping" do
     setup do
       stub_controller_success()

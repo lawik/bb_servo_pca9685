@@ -120,18 +120,56 @@ defmodule BB.Servo.PCA9685.Actuator do
     end
   end
 
+  # Parameter changes can move the motor limits or the pulse range (e.g.
+  # `max_pulse: param([:steering, :left_pulse])`), so both are refreshed.
   @impl BB.Actuator
   def handle_options(new_opts, state) do
     motor_profile = Keyword.fetch!(new_opts, :motor_profile)
-    motor_range = motor_profile.motor_upper - motor_profile.motor_lower
+    min_pulse = Keyword.get(new_opts, :min_pulse, state.min_pulse)
+    max_pulse = Keyword.get(new_opts, :max_pulse, state.max_pulse)
 
-    {:ok,
-     %{
-       state
-       | motor_profile: motor_profile,
-         motor_range: motor_range,
-         current_motor_angle: clamp_motor_angle(state.current_motor_angle, motor_profile)
-     }}
+    state = %{
+      state
+      | motor_profile: motor_profile,
+        motor_range: motor_profile.motor_upper - motor_profile.motor_lower,
+        min_pulse: min_pulse,
+        max_pulse: max_pulse,
+        pulse_range: max_pulse - min_pulse,
+        current_motor_angle: clamp_motor_angle(state.current_motor_angle, motor_profile)
+    }
+
+    reapply_position(state)
+  end
+
+  # The same angle may now land on a different pulse. While armed and holding
+  # a position, write it straight away, so a recalibration shows up without a
+  # new command: hold full lock and tune the end pulse until the servo just
+  # reaches its stop. A servo that is disarmed or was told to stop stays as it is.
+  defp reapply_position(%{current_pulse: 0} = state), do: {:ok, state}
+
+  defp reapply_position(state) do
+    pulse = motor_angle_to_pulse(state.current_motor_angle, state)
+
+    cond do
+      pulse == state.current_pulse ->
+        {:ok, state}
+
+      not BB.Safety.armed?(state.bb.robot) ->
+        {:ok, state}
+
+      true ->
+        case BBProcess.call(
+               state.bb.robot,
+               state.controller,
+               {:pulse_width, state.channel, pulse}
+             ) do
+          result when result == :ok or (is_tuple(result) and elem(result, 0) == :ok) ->
+            {:ok, %{state | current_pulse: pulse}}
+
+          {:error, reason} ->
+            {:stop, reason}
+        end
+    end
   end
 
   defp build_state(opts) do
@@ -226,8 +264,8 @@ defmodule BB.Servo.PCA9685.Actuator do
   # This is not the safety path: making hardware safe is `disarm/1`.
   def handle_command(%Message{payload: %Command.Stop{}}, state) do
     case BBProcess.call(state.bb.robot, state.controller, {:pulse_width, state.channel, 0}) do
-      :ok -> {:noreply, state}
-      {:ok, _} -> {:noreply, state}
+      :ok -> {:noreply, %{state | current_pulse: 0}}
+      {:ok, _} -> {:noreply, %{state | current_pulse: 0}}
       {:error, reason} -> {:stop, reason, state}
     end
   end
