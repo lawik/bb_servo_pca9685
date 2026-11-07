@@ -143,6 +143,16 @@ defmodule BB.Servo.PCA9685.Controller do
   defp maybe_add_oe_pin(opts, oe_pin), do: Keyword.put(opts, :oe_pin, oe_pin)
 
   @impl BB.Controller
+  # A 0µs pulse means no pulses at all: it's how the actuator lets go of its
+  # servo on `Stop` and disarm. `PCA9685.Device.pulse_width/3` only accepts
+  # positive widths and returns an error for 0, which failed every disarm, so
+  # this zeroes the channel's duty cycle instead. (The chip's full-off bit
+  # would be the textbook way, but the library doesn't expose it.)
+  def handle_call({:pulse_width, channel, 0}, _from, state) do
+    result = PCA9685.Device.channel(state.device, channel, 0, 0)
+    {:reply, result, state}
+  end
+
   def handle_call({:pulse_width, channel, microseconds}, _from, state) do
     result = PCA9685.Device.pulse_width(state.device, channel, microseconds)
     {:reply, result, state}

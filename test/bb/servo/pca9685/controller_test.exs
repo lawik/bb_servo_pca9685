@@ -166,6 +166,20 @@ defmodule BB.Servo.PCA9685.ControllerTest do
       assert {:reply, :ok, _state} =
                Controller.handle_call({:pulse_width, 0, 1000}, self(), state)
     end
+
+    test "turns the channel off for a 0µs pulse, which PCA9685.Device.pulse_width rejects",
+         %{state: state} do
+      test_pid = self()
+      reject(PCA9685.Device, :pulse_width, 3)
+
+      expect(PCA9685.Device, :channel, fn pid, channel, on, off ->
+        send(test_pid, {:channel, pid, channel, on, off})
+        :ok
+      end)
+
+      assert {:reply, :ok, _state} = Controller.handle_call({:pulse_width, 5, 0}, self(), state)
+      assert_receive {:channel, _pid, 5, 0, 0}
+    end
   end
 
   describe "handle_call :output_enable" do
