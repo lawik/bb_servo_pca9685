@@ -163,6 +163,7 @@ Define one controller per physical PCA9685 device.
 | `controller` | atom | required | Name of the controller in robot registry |
 | `min_pulse` | integer | 500 | Minimum PWM pulse width (microseconds) |
 | `max_pulse` | integer | 2500 | Maximum PWM pulse width (microseconds) |
+| `center_pulse` | integer | midpoint | PWM pulse width for the joint's centre (microseconds) |
 
 To reverse a servo relative to its joint, configure the actuator's joint
 transmission rather than passing an actuator option:
@@ -226,13 +227,19 @@ The actuator maps the joint's position limits to the servo's PWM range:
 ```
 Joint lower limit  ->  min_pulse (500 microseconds)
 Joint upper limit  ->  max_pulse (2500 microseconds)
-Joint centre       ->  mid_pulse (1500 microseconds)
+Joint centre       ->  center_pulse (halfway between them unless set)
 ```
 
 For a joint with limits `-45 degrees` to `+45 degrees`:
 - `-45 degrees` maps to 500 microseconds
 - `0 degrees` maps to 1500 microseconds
 - `+45 degrees` maps to 2500 microseconds
+
+Set `center_pulse` when the servo's centre isn't halfway between its end
+pulses, as with steering, where full left, full right and straight ahead each
+need trimming. Each half of the range is then mapped on its own, so with
+`min_pulse: 1200, center_pulse: 1600, max_pulse: 2000`, `-45 degrees` is 1200,
+`-22.5 degrees` 1400, `0 degrees` 1600 and `+45 degrees` 2000 microseconds.
 
 ### Position Feedback
 

@@ -65,7 +65,6 @@ defmodule BB.Servo.PCA9685.ActuatorTest do
       assert state.motor_profile.motor_lower == -0.5
       assert state.motor_profile.motor_upper == 0.5
       assert state.motor_profile.motor_velocity_limit == 1.0
-      assert state.motor_range == 1.0
     end
 
     test "stores channel and controller name" do
@@ -302,7 +301,15 @@ defmodule BB.Servo.PCA9685.ActuatorTest do
 
       assert_receive {:pulse, 2000}
       assert state.current_pulse == 2000
-      assert state.pulse_range == 1000
+    end
+
+    test "without a center_pulse, the middle follows the new range", %{state: state, opts: opts} do
+      {:noreply, state} = Actuator.handle_command(position_command(0.0), state)
+      capture_pulses()
+
+      assert {:ok, _state} = Actuator.handle_options(Keyword.put(opts, :max_pulse, 2000), state)
+
+      assert_receive {:pulse, 1600}
     end
 
     test "maps later commands onto the new range", %{state: state, opts: opts} do
@@ -331,6 +338,73 @@ defmodule BB.Servo.PCA9685.ActuatorTest do
       assert {:ok, _state} = Actuator.handle_options(widen(opts), state)
 
       refute_receive {:pulse, _}
+    end
+  end
+
+  describe "center_pulse" do
+    setup do
+      stub_controller_success()
+      stub(BB.Safety, :armed?, fn TestRobot -> true end)
+
+      opts = [
+        bb: default_bb_context(),
+        channel: 0,
+        controller: @controller_name,
+        min_pulse: 1200,
+        max_pulse: 2000,
+        center_pulse: 1500,
+        motor_profile: motor_profile(motor_lower: -1.0, motor_upper: 1.0)
+      ]
+
+      {:ok, state} = Actuator.init(opts)
+
+      {:ok, state: state, opts: opts}
+    end
+
+    defp pulse_for(position, state) do
+      test_pid = self()
+
+      expect(BB.Process, :call, fn TestRobot, @controller_name, {:pulse_width, 0, pulse} ->
+        send(test_pid, {:pulse, pulse})
+        :ok
+      end)
+
+      {:noreply, state} = Actuator.handle_command(position_command(position), state)
+      assert_receive {:pulse, pulse}
+      {pulse, state}
+    end
+
+    test "starts the servo on it", %{state: state} do
+      assert state.current_pulse == 1500
+    end
+
+    test "maps each half of the range separately", %{state: state} do
+      assert {1200, _} = pulse_for(-1.0, state)
+      assert {1350, _} = pulse_for(-0.5, state)
+      assert {1500, _} = pulse_for(0.0, state)
+      assert {1750, _} = pulse_for(0.5, state)
+      assert {2000, _} = pulse_for(1.0, state)
+    end
+
+    test "a new center_pulse rewrites a held middle at once", %{state: state, opts: opts} do
+      {1500, state} = pulse_for(0.0, state)
+      test_pid = self()
+
+      stub(BB.Process, :call, fn TestRobot, @controller_name, {:pulse_width, 0, pulse} ->
+        send(test_pid, {:pulse, pulse})
+        :ok
+      end)
+
+      assert {:ok, state} = Actuator.handle_options(Keyword.put(opts, :center_pulse, 1600), state)
+      assert_receive {:pulse, 1600}
+      assert state.current_pulse == 1600
+    end
+
+    test "end pulses don't move it", %{state: state, opts: opts} do
+      {:ok, state} = Actuator.handle_options(Keyword.put(opts, :max_pulse, 2200), state)
+
+      assert {1500, _} = pulse_for(0.0, state)
+      assert {2200, _} = pulse_for(1.0, state)
     end
   end
 
