@@ -128,12 +128,15 @@ actuator :pan_servo, {BB.Servo.PCA9685.Actuator,
   channel: 0,          # Required: PCA9685 channel (0-15)
   controller: :pca9685, # Required: name of the controller
   min_pulse: 500,      # Optional: minimum pulse width in µs (default: 500)
-  max_pulse: 2500      # Optional: maximum pulse width in µs (default: 2500)
+  max_pulse: 2500,     # Optional: maximum pulse width in µs (default: 2500)
+  center_pulse: 1500   # Optional: pulse width in µs at the joint's centre
+                       # (default: halfway between min_pulse and max_pulse)
 }
 ```
 
 Most servos work well with the defaults. Adjust `min_pulse` and `max_pulse` if
-your servo has different endpoints.
+your servo has different endpoints, and `center_pulse` if its centre isn't
+halfway between them.
 
 ## Starting the Robot
 

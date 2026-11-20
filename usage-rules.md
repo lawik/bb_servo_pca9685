@@ -113,6 +113,7 @@ BB.Actuator.set_position(MyRobot.Robot, :shoulder_servo, 0.5, delivery: :direct)
 | `:controller` | required | Name of the controller entry to route through |
 | `:min_pulse` | `500` | Pulse width (µs) mapped to the joint's lower limit |
 | `:max_pulse` | `2500` | Pulse width (µs) mapped to the joint's upper limit |
+| `:center_pulse` | midpoint | Pulse width (µs) mapped to the middle of the joint's range; each half is then mapped separately |
 
 ## Anti-patterns
 

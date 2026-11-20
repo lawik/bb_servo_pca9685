@@ -13,6 +13,9 @@ defmodule BB.Servo.PCA9685.Actuator do
   - Velocity limit from `motor_profile.motor_velocity_limit`
   - PWM range maps linearly to the motor's position range
     (`motor_lower → min_pulse`, `motor_upper → max_pulse`)
+  - With `center_pulse`, each half of the range maps separately, so the
+    middle of the range lands on that pulse rather than halfway between
+    `min_pulse` and `max_pulse`
 
   When a position command is received, the actuator:
   1. Clamps the position to motor limits
@@ -73,6 +76,13 @@ defmodule BB.Servo.PCA9685.Actuator do
         type: :pos_integer,
         doc: "The maximum PWM pulse that can be sent to the servo (µs)",
         default: 2500
+      ],
+      center_pulse: [
+        type: :pos_integer,
+        doc:
+          "The PWM pulse (µs) for the middle of the joint's range. Defaults to halfway " <>
+            "between `min_pulse` and `max_pulse`. Set it when the servo's centre isn't " <>
+            "there, e.g. steering, where both full locks and straight ahead need trimming"
       ]
     ]
 
@@ -120,21 +130,18 @@ defmodule BB.Servo.PCA9685.Actuator do
     end
   end
 
-  # Parameter changes can move the motor limits or the pulse range (e.g.
-  # `max_pulse: param([:steering, :left_pulse])`), so both are refreshed.
+  # Parameter changes can move the motor limits or the pulses (e.g.
+  # `max_pulse: param([:steering, :left_pulse])`), so all are refreshed.
   @impl BB.Actuator
   def handle_options(new_opts, state) do
     motor_profile = Keyword.fetch!(new_opts, :motor_profile)
-    min_pulse = Keyword.get(new_opts, :min_pulse, state.min_pulse)
-    max_pulse = Keyword.get(new_opts, :max_pulse, state.max_pulse)
 
     state = %{
       state
       | motor_profile: motor_profile,
-        motor_range: motor_profile.motor_upper - motor_profile.motor_lower,
-        min_pulse: min_pulse,
-        max_pulse: max_pulse,
-        pulse_range: max_pulse - min_pulse,
+        min_pulse: Keyword.get(new_opts, :min_pulse, state.min_pulse),
+        max_pulse: Keyword.get(new_opts, :max_pulse, state.max_pulse),
+        center_pulse: Keyword.get(new_opts, :center_pulse, state.center_pulse),
         current_motor_angle: clamp_motor_angle(state.current_motor_angle, motor_profile)
     }
 
@@ -144,7 +151,8 @@ defmodule BB.Servo.PCA9685.Actuator do
   # The same angle may now land on a different pulse. While armed and holding
   # a position, write it straight away, so a recalibration shows up without a
   # new command: hold full lock and tune the end pulse until the servo just
-  # reaches its stop. A servo that is disarmed or was told to stop stays as it is.
+  # reaches its stop, or hold the middle and tune center_pulse. A servo that
+  # is disarmed or was told to stop stays as it is.
   defp reapply_position(%{current_pulse: 0} = state), do: {:ok, state}
 
   defp reapply_position(state) do
@@ -177,29 +185,21 @@ defmodule BB.Servo.PCA9685.Actuator do
     [name, joint_name | _] = Enum.reverse(opts.bb.path)
     motor_profile = opts.motor_profile
 
-    min_pulse = Map.get(opts, :min_pulse, 500)
-    max_pulse = Map.get(opts, :max_pulse, 2500)
-
     with :ok <- validate_motor_profile(motor_profile, joint_name) do
-      motor_range = motor_profile.motor_upper - motor_profile.motor_lower
-      initial_pulse = (max_pulse + min_pulse) / 2
-
       state = %{
         bb: opts.bb,
         channel: opts.channel,
         controller: opts.controller,
-        min_pulse: min_pulse,
-        max_pulse: max_pulse,
+        min_pulse: Map.get(opts, :min_pulse, 500),
+        max_pulse: Map.get(opts, :max_pulse, 2500),
+        center_pulse: Map.get(opts, :center_pulse),
         motor_profile: motor_profile,
-        motor_range: motor_range,
-        pulse_range: max_pulse - min_pulse,
-        current_pulse: initial_pulse,
         current_motor_angle: motor_profile.motor_initial_position,
         name: name,
         joint_name: joint_name
       }
 
-      {:ok, state}
+      {:ok, Map.put(state, :current_pulse, center_pulse(state))}
     end
   end
 
@@ -319,10 +319,25 @@ defmodule BB.Servo.PCA9685.Actuator do
     |> min(upper)
   end
 
-  # Motor-space angle maps linearly to PWM pulse width: motor_lower → min_pulse,
-  # motor_upper → max_pulse.
+  # Motor-space angle maps to PWM pulse width in two linear halves that meet
+  # in the middle of the range: motor_lower → min_pulse, the midpoint →
+  # center_pulse, motor_upper → max_pulse. Without a center_pulse, the halves
+  # line up as one straight line from min_pulse to max_pulse.
   defp motor_angle_to_pulse(motor_angle, state) do
-    normalised = (motor_angle - state.motor_profile.motor_lower) / state.motor_range
-    round(state.min_pulse + normalised * state.pulse_range)
+    %{motor_lower: lower, motor_upper: upper} = state.motor_profile
+    middle = (lower + upper) / 2
+    center = center_pulse(state)
+
+    pulse =
+      if motor_angle <= middle do
+        state.min_pulse + (motor_angle - lower) / (middle - lower) * (center - state.min_pulse)
+      else
+        center + (motor_angle - middle) / (upper - middle) * (state.max_pulse - center)
+      end
+
+    round(pulse)
   end
+
+  defp center_pulse(%{center_pulse: nil} = state), do: (state.min_pulse + state.max_pulse) / 2
+  defp center_pulse(state), do: state.center_pulse
 end
